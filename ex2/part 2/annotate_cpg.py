@@ -1,6 +1,23 @@
 from Bio import SeqIO  # pip install biopython
+from hmmlearn import hmm
 import argparse
 import gzip
+import numpy as np
+
+# Maps for Nucleotides
+NUC_MAP = {"A": 0, "C": 1, "G": 2, "T": 3}
+# Maps for Labels
+LABEL_MAP = {"N": 0, "C": 1}
+
+# Define number of states and emissions in model
+N_STATES = 8
+N_EMISSIONS = 4
+
+# 8-State Definition:
+# States 0-3: A, C, G, T (Outside CpG)
+# States 4-7: A, C, G, T (Inside CpG)
+# Formula: State_Index = (Is_CpG * 4) + Nucleotide_Index
+
 
 def parse_fasta_file(file_path: str):
     """
@@ -14,16 +31,17 @@ def parse_fasta_file(file_path: str):
     """
     sequences = {}
 
-    if file_path.endswith('.gz'):
-        with gzip.open(file_path, 'rt') as file_handle:
+    if file_path.endswith(".gz"):
+        with gzip.open(file_path, "rt") as file_handle:
             for record in SeqIO.parse(file_handle, "fasta"):
                 sequences[record.id] = str(record.seq)
     else:
-        with open(file_path, 'r') as file_handle:
+        with open(file_path, "r") as file_handle:
             for record in SeqIO.parse(file_handle, "fasta"):
                 sequences[record.id] = str(record.seq)
 
     return sequences
+
 
 def prepare_training_data(sequence_file: str, label_file: str):
     """
@@ -40,7 +58,9 @@ def prepare_training_data(sequence_file: str, label_file: str):
     labels = parse_fasta_file(label_file)
 
     if sequences.keys() != labels.keys():
-        raise ValueError("Mismatch between sequence IDs and label IDs in the provided files.")
+        raise ValueError(
+            "Mismatch between sequence IDs and label IDs in the provided files."
+        )
 
     return [(sequences[seq_id], labels[seq_id]) for seq_id in sequences]
 
@@ -55,8 +75,52 @@ def train_classifier(training_data):
     Returns:
         object: Your trained classifier model.
     """
-    # TODO: Implement your model training logic here
-    model = None
+    # Initialize learned parameters
+    start_prob = np.ones(N_STATES)
+    emission_mat = np.ones((N_EMISSIONS, N_STATES))
+    transition_mat = np.ones((N_STATES, N_STATES))
+
+    encoded_seqs = []
+    encoded_labels = []
+
+    # Convert seq to numerical seq
+    # Convert label seq to 8 states numerical seq
+    for seq, label in training_data:
+        encoded_seq = np.array([NUC_MAP[b] for b in seq], dtype=int)
+        is_cpg = np.array([LABEL_MAP[l] for l in label], dtype=int)
+        encoded_label = 4 * is_cpg + encoded_seq
+        encoded_seqs.append(encoded_seq)
+        encoded_labels.append(encoded_label)
+
+    # Calculate P_0
+    start_counts = np.zeros(N_STATES)
+    for label in encoded_labels:
+        start_counts[label[0]] += 1
+    start_prob = start_counts / len(encoded_labels)
+
+    # Calculate tranisition matrix
+    transition_count = np.zeros((N_STATES, N_STATES))
+    for label in encoded_labels:
+        prev_state = label[0]
+        for state in label:
+            transition_count[prev_state, state] += 1
+            prev_state = state
+
+    transition_mat = transition_count / (transition_count.sum(axis=0) + 1e-10)
+
+    # Calculate emission matrix
+    # TODO: make sure that is correct (A_in | A is not prob 1)
+    emission_count = np.zeros((N_STATES, N_EMISSIONS))
+    for seq, label in zip(encoded_seqs, encoded_labels):
+        for obs, state in zip(seq, label):
+            emission_count[state, obs] += 1
+
+    emission_mat = emission_count / (emission_count.sum(axis=0) + 1e-10)
+
+    model = hmm.CategoricalHMM(n_components=N_STATES, init_params="")
+    model.startprob_ = start_prob
+    model.transmat_ = transition_mat
+    model.emissionprob_ = emission_mat
     return model
 
 
@@ -72,7 +136,9 @@ def annotate_sequence(model, sequence):
         str: A string of annotations, where 'C' marks a CpG island region and 'N' denotes non-CpG regions.
     """
     # TODO: Replace with your (hopefully better) prediction logic
-    annotations = ''.join(['C' if nucleotide == 'C' else 'N' for nucleotide in sequence])
+    annotations = "".join(
+        ["C" if nucleotide == "C" else "N" for nucleotide in sequence]
+    )
     return annotations
 
 
@@ -90,17 +156,26 @@ def annotate_fasta_file(model, input_path, output_path):
     """
     sequences = parse_fasta_file(input_path)
 
-    with gzip.open(output_path, 'wt') as gzipped_file:
+    with gzip.open(output_path, "wt") as gzipped_file:
         for seq_id, sequence in sequences.items():
             annotation = annotate_sequence(model, sequence)
             gzipped_file.write(f">{seq_id}\n{annotation}\n")
 
 
-
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Predict CpG islands in DNA sequences.")
-    parser.add_argument("--fasta_path", type=str, help="Path to the input FASTA file containing DNA sequences.")
-    parser.add_argument("--output_file", type=str, help="Path to the output FASTA file for saving predictions.")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description="Predict CpG islands in DNA sequences."
+    )
+    parser.add_argument(
+        "--fasta_path",
+        type=str,
+        help="Path to the input FASTA file containing DNA sequences.",
+    )
+    parser.add_argument(
+        "--output_file",
+        type=str,
+        help="Path to the output FASTA file for saving predictions.",
+    )
 
     args = parser.parse_args()
 
