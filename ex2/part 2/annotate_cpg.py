@@ -75,11 +75,6 @@ def train_classifier(training_data):
     Returns:
         object: Your trained classifier model.
     """
-    # Initialize learned parameters
-    start_prob = np.ones(N_STATES)
-    emission_mat = np.ones((N_EMISSIONS, N_STATES))
-    transition_mat = np.ones((N_STATES, N_STATES))
-
     encoded_seqs = []
     encoded_labels = []
 
@@ -88,7 +83,8 @@ def train_classifier(training_data):
     for seq, label in training_data:
         encoded_seq = np.array([NUC_MAP[b] for b in seq], dtype=int)
         is_cpg = np.array([LABEL_MAP[l] for l in label], dtype=int)
-        encoded_label = 4 * is_cpg + encoded_seq
+        encoded_label = (4 * is_cpg) + encoded_seq
+
         encoded_seqs.append(encoded_seq)
         encoded_labels.append(encoded_label)
 
@@ -96,26 +92,27 @@ def train_classifier(training_data):
     start_counts = np.zeros(N_STATES)
     for label in encoded_labels:
         start_counts[label[0]] += 1
-    start_prob = start_counts / len(encoded_labels)
+    start_prob = start_counts / (start_counts.sum() + 1e-10)
 
     # Calculate tranisition matrix
-    transition_count = np.zeros((N_STATES, N_STATES))
+    transition_counts = np.zeros((N_STATES, N_STATES))
     for label in encoded_labels:
-        prev_state = label[0]
-        for state in label:
-            transition_count[prev_state, state] += 1
-            prev_state = state
+        np.add.at(transition_counts, (label[:-1], label[1:]), 1)
 
-    transition_mat = transition_count / (transition_count.sum(axis=0) + 1e-10)
+    transition_mat = transition_counts / (
+        transition_counts.sum(axis=1, keepdims=True) + 1e-10
+    )
 
     # Calculate emission matrix
     # TODO: make sure that is correct (A_in | A is not prob 1)
-    emission_count = np.zeros((N_STATES, N_EMISSIONS))
-    for seq, label in zip(encoded_seqs, encoded_labels):
-        for obs, state in zip(seq, label):
-            emission_count[state, obs] += 1
+    emission_counts = np.zeros((N_STATES, N_EMISSIONS))
+    flat_labels = np.concatenate(encoded_labels)
+    flat_seqs = np.concatenate(encoded_seqs)
+    np.add.at(emission_counts, (flat_labels, flat_seqs), 1)
 
-    emission_mat = emission_count / (emission_count.sum(axis=0) + 1e-10)
+    emission_mat = emission_counts / (
+        emission_counts.sum(axis=1, keepdims=True) + 1e-10
+    )
 
     model = hmm.CategoricalHMM(n_components=N_STATES, init_params="")
     model.startprob_ = start_prob
